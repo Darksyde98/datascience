@@ -1,0 +1,189 @@
+---
+title: "Coursera - Data Science - Capstone Project - Milestone Report"
+author: "Anders Molven Larsen"
+date: "20 December 2017"
+output: html_document
+---
+
+## Introduction
+
+This, the Milestone Report for the Coursera Data Science Capstone project, is a report describing the progress of initial data loading and analysis as part of the overal goal of creating a word prediction app. We will be using Natural language processing techniques to perform the analysis of the data and to build the predictive model.
+
+This report describes key findings in our exploratory data analysis and the next steps in building our predictive model.
+
+## Obtaining the Data
+
+```{r data, message=FALSE, warning=FALSE}
+library(downloader)
+library(plyr)
+library(dplyr)
+library(knitr)
+library(tm)
+
+## Download and read the dataset
+## 1 . Verify whether the project directory exists and establish URL.
+if(!file.exists("./projectData")){
+  dir.create("./projectData")
+}
+Url <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+
+## Verify is the dataset exists and download if necessary.
+if(!file.exists("./projectData/Coursera-SwiftKey.zip")){
+  download.file(Url,destfile="./projectData/Coursera-SwiftKey.zip",mode = "wb")
+}
+## Verify if data has been unzipped.
+if(!file.exists("./projectData/final")){
+  unzip(zipfile="./projectData/Coursera-SwiftKey.zip",exdir="./projectData")
+}
+```
+
+Initial review reveals the dataset to be extremely large which requires some forward planning before analysis can begin. The dataset consists of four separate datasets representing four different languages:
+
+1. English
+2. Russian
+3. German
+4. Finnish
+
+While there is no reason why we couldn't perform this exersize with any of the other languages we will focus on the english dataset for ease of understanding. This dataset consists of three text files:
+
+1. Blogs
+2. News
+3. Twitter
+
+We start by reading the lines of the text files into R.
+
+```{r us_data, message=FALSE, warning=FALSE}
+path <- file.path("./projectData/final" , "en_US")
+files<-list.files(path, recursive=TRUE)
+# Lets make a file connection of the twitter data set
+con <- file("./projectData/final/en_US/en_US.twitter.txt", "r") 
+#lineTwitter<-readLines(con,encoding = "UTF-8", skipNul = TRUE)
+lineTwitter<-readLines(con, skipNul = TRUE)
+# Close the connection handle when you are done
+close(con)
+# Lets make a file connection of the blog data set
+con <- file("./projectData/final/en_US/en_US.blogs.txt", "r") 
+#lineBlogs<-readLines(con,encoding = "UTF-8", skipNul = TRUE)
+lineBlogs<-readLines(con, skipNul = TRUE)
+# Close the connection handle when you are done
+close(con)
+# Lets make a file connection of the news data set
+con <- file("./projectData/final/en_US/en_US.news.txt", "r") 
+#lineNews<-readLines(con,encoding = "UTF-8", skipNul = TRUE)
+lineNews<-readLines(con, skipNul = TRUE)
+# Close the connection handle when you are done
+close(con)
+```
+
+To be able to build an understanding of the data we summarize the datasets in a easy to read table.
+
+```{r evaluation, message=FALSE, warning=FALSE}
+library(stringi)
+library(DT)
+
+# Get file sizes
+lineBlogs.size <- file.info("./projectData/final/en_US/en_US.blogs.txt")$size / 1024 ^ 2
+lineNews.size <- file.info("./projectData/final/en_US/en_US.news.txt")$size / 1024 ^ 2
+lineTwitter.size <- file.info("./projectData/final/en_US/en_US.twitter.txt")$size / 1024 ^ 2
+
+# Get words in files
+lineBlogs.words <- stri_count_words(lineBlogs)
+lineNews.words <- stri_count_words(lineNews)
+lineTwitter.words <- stri_count_words(lineTwitter)
+
+# Summary of the data sets
+df <- data.frame(source = c("Blogs", "News", "Twitter"),
+           Size = c(lineBlogs.size, lineNews.size, lineTwitter.size),
+           Lines = c(length(lineBlogs), length(lineNews), length(lineTwitter)),
+           Words = c(sum(lineBlogs.words), sum(lineNews.words), sum(lineTwitter.words)),
+           Mean = c(mean(lineBlogs.words), mean(lineNews.words), mean(lineTwitter.words)))
+
+# Data table presentation of dataset summary
+datatable(df) %>% formatRound(c('Size', 'Mean'), 2)
+```
+
+## Data Cleaning
+
+The next step is to perform some exploratory analysis but before we can begin we need to clean up the data in an effort to remove excess data that will skew the predictive model. To make the datasets uniform we will remove:
+
+- URL's
+- Special Characters
+- Punctuation
+- Numbers
+- Stopwords
+
+In addition we will change all text to lower case and, due to the sheer size of the datasets, we will sample 2% of each set for analysis.
+
+```{r cleaning, message=FALSE, warning=FALSE}
+library(tm)
+# Sample the data
+set.seed(5000)
+data.sample <- c(sample(lineBlogs, length(lineBlogs) * 0.02),
+                 sample(lineNews, length(lineNews) * 0.02),
+                 sample(lineTwitter, length(lineTwitter) * 0.02))
+
+# Create corpus and clean the data
+corpus <- VCorpus(VectorSource(data.sample))
+toSpace <- content_transformer(function(x, pattern) gsub(pattern, " ", x))
+corpus <- tm_map(corpus, toSpace, "(f|ht)tp(s?)://(.*)[.][a-z]+")
+corpus <- tm_map(corpus, toSpace, "@[^\\s]+")
+corpus <- tm_map(corpus, tolower)
+corpus <- tm_map(corpus, removeWords, stopwords("en"))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, PlainTextDocument)
+```
+
+## Exploratory Analysis
+
+We can now perform exploratory analysis on our clean data and we find that the most useful analysis we can perform at this point are plots of the most frequently occuring words in the form of the most common n-grams.
+
+```{r ngrams, message=FALSE, warning=FALSE}
+library(RWeka)
+library(ggplot2)
+##annotate
+options(mc.cores=1)
+# we'll get the frequencies of the word
+getFreq <- function(tdm) {
+  freq <- sort(rowSums(as.matrix(tdm)), decreasing = TRUE)
+  return(data.frame(word = names(freq), freq = freq))
+}
+bigram <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigram <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+makePlot <- function(data, label) {
+  ggplot(data[1:30,], aes(reorder(word, -freq), freq)) +
+         labs(x = label, y = "Frequency") +
+         theme(axis.text.x = element_text(angle = 60, size = 12, hjust = 1)) +
+         geom_bar(stat = "identity", fill = I("blue"))
+}
+
+# Get frequencies of most common n-grams in data sample
+freq1 <- getFreq(removeSparseTerms(TermDocumentMatrix(corpus), 0.9999))
+freq2 <- getFreq(removeSparseTerms(TermDocumentMatrix(corpus, control = list(tokenize = bigram)), 0.9999))
+freq3 <- getFreq(removeSparseTerms(TermDocumentMatrix(corpus, control = list(tokenize = trigram)), 0.9999))
+```
+
+Most common N-Grams:
+
+```{r unigram_plot, echo=FALSE}
+makePlot(freq1, "30 Most Common Uni-grams")
+```
+
+
+```{r bigram_plot, echo=FALSE}
+makePlot(freq2, "30 Most Common Bi-grams")
+```
+
+
+```{r trigram_plot, echo=FALSE}
+makePlot(freq3, "30 Most Common Tri-grams")
+```
+
+## Conclusion and next steps
+
+With our exploratory analysis complete we will now finalize our predictive algorithm and start implementing it in our Shiny app.
+
+We intend to use a predictive algorithm modelled on the one deployed in our exploratory analysis. At first glance a possible prediction strategy would be to use the trigram model above with a fallback to lower n-gram solutions if no prediction is achieved with on the first pass.
+
+The shiny app will be a simple user interface allowing the user to input a word and have the app predict the next word based on the chosen algorithm.
